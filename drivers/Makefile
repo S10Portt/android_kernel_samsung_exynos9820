@@ -1,244 +1,234 @@
-# SPDX-License-Identifier: GPL-2.0
-#
-# Makefile for the Linux kernel device drivers.
-#
-# 15 Sep 2000, Christoph Hellwig <hch@infradead.org>
-# Rewritten to use lists instead of if-statements.
-#
+#!/bin/bash
 
-obj-y				+= irqchip/
-obj-y				+= bus/
+abort()
+{
+    cd -
+    echo "-----------------------------------------------"
+    echo "Kernel compilation failed! Exiting..."
+    echo "-----------------------------------------------"
+    exit -1
+}
 
-obj-$(CONFIG_GENERIC_PHY)	+= phy/
+unset_flags()
+{
+    cat << EOF
+Usage: $(basename "$0") [options]
+Options:
+    -m, --model [value]     Specify the model code of the phone
+    -r, --recovery [y/N]    Compile kernel for an Android Recovery
+EOF
+}
 
-# GPIO must come after pinctrl as gpios may need to mux pins etc
-obj-$(CONFIG_PINCTRL)		+= pinctrl/
-obj-$(CONFIG_GPIOLIB)		+= gpio/
-obj-y				+= pwm/
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model|-m)
+            MODEL="$2"
+            shift 2
+            ;;
+        --recovery|-r)
+            RECOVERY_OPTION="$2"
+            shift 2
+            ;;
+        *)\
+            unset_flags
+            exit 1
+            ;;
+    esac
+done
 
-obj-$(CONFIG_PCI)		+= pci/
-obj-$(CONFIG_PCI_ENDPOINT)	+= pci/endpoint/
-# PCI dwc controller drivers
-obj-y				+= pci/dwc/
+echo "Preparing the build environment..."
 
-obj-$(CONFIG_PARISC)		+= parisc/
-obj-$(CONFIG_RAPIDIO)		+= rapidio/
-obj-y				+= video/
-obj-y				+= idle/
+pushd $(dirname "$0") > /dev/null
+CORES=`cat /proc/cpuinfo | grep -c processor`
 
-# IPMI must come before ACPI in order to provide IPMI opregion support
-obj-y				+= char/ipmi/
+# Define toolchain variables
+CLANG_DIR=$PWD/toolchain/clang-r547379
+PATH=$CLANG_DIR/bin:$PATH
 
-obj-$(CONFIG_ACPI)		+= acpi/
-obj-$(CONFIG_SFI)		+= sfi/
-# PnP must come after ACPI since it will eventually need to check if acpi
-# was used and do nothing if so
-obj-$(CONFIG_PNP)		+= pnp/
-obj-y				+= amba/
+# Check if toolchain exists
+if [ ! -f "$CLANG_DIR/bin/clang-20" ]; then
+    echo "-----------------------------------------------"
+    echo "Toolchain not found! Downloading..."
+    echo "-----------------------------------------------"
+    rm -rf $CLANG_DIR
+    mkdir -p $CLANG_DIR
+    pushd $CLANG_DIR > /dev/null
+    curl -LJOk https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
+    tar xf main-clang-r547379.tar.gz
+    rm main-clang-r547379.tar.gz
+    echo "Cleaning up..."
+    popd > /dev/null
+fi
 
-obj-y				+= clk/
-# Many drivers will want to use DMA so this has to be made available
-# really early.
-obj-$(CONFIG_DMADEVICES)	+= dma/
+# Integrate the latest KernelSU-Next into the kernel build.
+./scripts/setup-kernelsu-next.sh || abort
 
-# SOC specific infrastructure drivers.
-obj-y				+= soc/
+MAKE_ARGS="
+LLVM=1 \
+LLVM_IAS=1 \
+ARCH=arm64 \
+O=out
+"
 
-obj-$(CONFIG_VIRTIO)		+= virtio/
-obj-$(CONFIG_XEN)		+= xen/
+# Define specific variables
+case $MODEL in
+beyond0lte)
+    BOARD=SRPRI28A016KU
+    SOC=exynos9820
+;;
+beyond1lte)
+    BOARD=SRPRI28B016KU
+    SOC=exynos9820
+;;
+beyond2lte)
+    BOARD=SRPRI17C016KU
+    SOC=exynos9820
+;;
+beyondx)
+    BOARD=SRPSC04B014KU
+    SOC=exynos9820
+;;
+d1)
+    BOARD=SRPSD26B009KU
+    SOC=exynos9825
+;;
+d1xks)
+    BOARD=SRPSD23A002KU
+    SOC=exynos9825
+;;
+d2s)
+    BOARD=SRPSC14B009KU
+    SOC=exynos9825
+;;
+d2x)
+    BOARD=SRPSC14C009KU
+    SOC=exynos9825
+;;
+d2xks)
+    BOARD=SRPSD23C002KU
+    SOC=exynos9825
+;;
+*)
+    unset_flags
+    exit
+esac
 
-# regulators early, since some subsystems rely on them to initialize
-obj-$(CONFIG_REGULATOR)		+= regulator/
+if [[ "$MODEL" == "d2xks" ]]; then
+    MODEL=d2x
+fi
 
-# reset controllers early, since gpu drivers might rely on them to initialize
-obj-$(CONFIG_RESET_CONTROLLER)	+= reset/
+if [[ "$RECOVERY_OPTION" == "y" ]]; then
+    RECOVERY=recovery.config
+fi
 
-# tty/ comes before char/ so that the VT console is the boot-time
-# default.
-obj-y				+= tty/
-obj-y				+= char/
+rm -rf build/out/$MODEL
+mkdir -p build/out/$MODEL/zip/files
+mkdir -p build/out/$MODEL/zip/META-INF/com/google/android
 
-# iommu/ comes before gpu as gpu are using iommu controllers
-obj-$(CONFIG_IOMMU_SUPPORT)	+= iommu/
+# Build kernel image
+echo "-----------------------------------------------"
+echo "Defconfig: "$KERNEL_DEFCONFIG""
 
-# gpu/ comes after char for AGP vs DRM startup and after iommu
-obj-y				+= gpu/
+if [ -z "$RECOVERY" ]; then
+    echo "Recovery: N"
+else
+    echo "Recovery: Y"
+fi
 
-obj-$(CONFIG_CONNECTOR)		+= connector/
+echo "-----------------------------------------------"
+echo "Building kernel using "$KERNEL_DEFCONFIG""
+echo "Generating configuration file..."
+echo "-----------------------------------------------"
+make ${MAKE_ARGS} -j$CORES exynos9820_defconfig $MODEL.config $RECOVERY || abort
 
-# i810fb and intelfb depend on char/agp/
-obj-$(CONFIG_FB_I810)           += video/fbdev/i810/
-obj-$(CONFIG_FB_INTEL)          += video/fbdev/intelfb/
+echo "Building kernel..."
+echo "-----------------------------------------------"
+make ${MAKE_ARGS} -j$CORES || abort
 
-obj-$(CONFIG_USE_MUIC)		+= muic/
+# Define constant variables
+KERNEL_PATH=build/out/$MODEL/Image
+KERNEL_OFFSET=0x00008000
+RAMDISK_OFFSET=0xF0000000
+SECOND_OFFSET=0xF0000000
+TAGS_OFFSET=0x00000100
+BASE=0x10000000
+CMDLINE='loop.max_part=7'
+HASHTYPE=sha1
+HEADER_VERSION=1
+OS_PATCH_LEVEL=2025-08
+OS_VERSION=16.0.0
+PAGESIZE=2048
+RAMDISK=build/out/$MODEL/ramdisk.cpio.gz
+OUTPUT_FILE=build/out/$MODEL/boot.img
 
-obj-$(CONFIG_IFCONN_MANAGER)    += ifconn/
+## Build auxiliary boot.img files
+# Copy kernel to build
+cp out/arch/arm64/boot/Image build/out/$MODEL
 
-obj-$(CONFIG_PARPORT)		+= parport/
-obj-$(CONFIG_NVM)		+= lightnvm/
-obj-y				+= base/ block/ misc/ mfd/ nfc/
-obj-$(CONFIG_LIBNVDIMM)		+= nvdimm/
-obj-$(CONFIG_DAX)		+= dax/
-obj-$(CONFIG_DMA_SHARED_BUFFER) += dma-buf/
-obj-$(CONFIG_NUBUS)		+= nubus/
-obj-y				+= macintosh/
-obj-$(CONFIG_IDE)		+= ide/
-obj-$(CONFIG_SCSI)		+= scsi/
-obj-y				+= nvme/
-obj-$(CONFIG_ATA)		+= ata/
-obj-$(CONFIG_TARGET_CORE)	+= target/
-obj-$(CONFIG_MTD)		+= mtd/
-obj-$(CONFIG_SPI)		+= spi/
-obj-$(CONFIG_SPMI)		+= spmi/
-obj-$(CONFIG_HSI)		+= hsi/
-obj-y				+= net/
-obj-$(CONFIG_ATM)		+= atm/
-obj-$(CONFIG_FUSION)		+= message/
-obj-y				+= firewire/
-obj-$(CONFIG_UIO)		+= uio/
-obj-$(CONFIG_VFIO)		+= vfio/
-obj-y				+= cdrom/
-obj-y				+= auxdisplay/
-obj-$(CONFIG_PCCARD)		+= pcmcia/
-obj-$(CONFIG_DIO)		+= dio/
-obj-$(CONFIG_SBUS)		+= sbus/
-obj-$(CONFIG_ZORRO)		+= zorro/
-obj-$(CONFIG_ATA_OVER_ETH)	+= block/aoe/
-obj-$(CONFIG_PARIDE) 		+= block/paride/
-obj-$(CONFIG_TC)		+= tc/
-obj-$(CONFIG_UWB)		+= uwb/
-obj-$(CONFIG_USB_PHY)		+= usb/
-obj-$(CONFIG_USB)		+= usb/
-obj-$(CONFIG_USB_SUPPORT)	+= usb/
-obj-$(CONFIG_PCI)		+= usb/
-obj-$(CONFIG_USB_GADGET)	+= usb/
-obj-$(CONFIG_OF)		+= usb/
-obj-$(CONFIG_SERIO)		+= input/serio/
-obj-$(CONFIG_GAMEPORT)		+= input/gameport/
-obj-$(CONFIG_INPUT)		+= input/
-obj-$(CONFIG_RTC_LIB)		+= rtc/
-obj-y				+= i2c/ media/
-obj-$(CONFIG_PPS)		+= pps/
-obj-y				+= ptp/
-obj-$(CONFIG_W1)		+= w1/
-obj-y				+= power/
-obj-$(CONFIG_HWMON)		+= hwmon/
-obj-$(CONFIG_THERMAL)		+= thermal/
-obj-$(CONFIG_WATCHDOG)		+= watchdog/
-obj-$(CONFIG_MD)		+= md/
-obj-$(CONFIG_BT)		+= bluetooth/
-obj-$(CONFIG_ACCESSIBILITY)	+= accessibility/
-obj-$(CONFIG_ISDN)		+= isdn/
-obj-$(CONFIG_EDAC)		+= edac/
-obj-$(CONFIG_EISA)		+= eisa/
-obj-$(CONFIG_CPU_FREQ)		+= cpufreq/
-obj-$(CONFIG_CPU_IDLE)		+= cpuidle/
-obj-y				+= mmc/
-obj-$(CONFIG_MEMSTICK)		+= memstick/
-obj-$(CONFIG_NEW_LEDS)		+= leds/
-obj-$(CONFIG_INFINIBAND)	+= infiniband/
-obj-$(CONFIG_SGI_SN)		+= sn/
-obj-y				+= firmware/
-obj-$(CONFIG_CRYPTO)		+= crypto/
-obj-$(CONFIG_SUPERH)		+= sh/
-ifndef CONFIG_ARCH_USES_GETTIMEOFFSET
-obj-y				+= clocksource/
-endif
-obj-$(CONFIG_DCA)		+= dca/
-obj-$(CONFIG_HID)		+= hid/
-obj-$(CONFIG_PPC_PS3)		+= ps3/
-obj-$(CONFIG_OF)		+= of/
-obj-$(CONFIG_SSB)		+= ssb/
-obj-$(CONFIG_BCMA)		+= bcma/
-obj-$(CONFIG_VHOST_RING)	+= vhost/
-obj-$(CONFIG_VHOST)		+= vhost/
-obj-$(CONFIG_VLYNQ)		+= vlynq/
-obj-$(CONFIG_STAGING)		+= staging/
-obj-y				+= platform/
+echo "-----------------------------------------------"
+# Build dtb
+if [[ "$SOC" == "exynos9820" ]]; then
+    echo "Building common exynos9820 Device Tree Blob Image..."
+    echo "-----------------------------------------------"
+    ./toolchain/mkdtimg cfg_create build/out/$MODEL/dtb.img build/dtconfigs/exynos9820.cfg -d out/arch/arm64/boot/dts/exynos
+fi
 
-obj-$(CONFIG_MAILBOX)		+= mailbox/
-obj-$(CONFIG_HWSPINLOCK)	+= hwspinlock/
-obj-$(CONFIG_REMOTEPROC)	+= remoteproc/
-obj-$(CONFIG_RPMSG)		+= rpmsg/
+if [[ "$SOC" == "exynos9825" ]]; then
+    echo "Building common exynos9825 Device Tree Blob Image..."
+    echo "-----------------------------------------------"
+    ./toolchain/mkdtimg cfg_create build/out/$MODEL/dtb.img build/dtconfigs/exynos9825.cfg -d out/arch/arm64/boot/dts/exynos
+fi
+echo "-----------------------------------------------"
 
-# Virtualization drivers
-obj-$(CONFIG_VIRT_DRIVERS)	+= virt/
-obj-$(CONFIG_HYPERV)		+= hv/
+echo "Building Device Tree Blob Output Image for "$MODEL"..."
+echo "-----------------------------------------------"
+./toolchain/mkdtimg cfg_create build/out/$MODEL/dtbo.img build/dtconfigs/$MODEL.cfg -d out/arch/arm64/boot/dts/samsung
+echo "-----------------------------------------------"
 
-obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
-obj-$(CONFIG_BATTERY_SAMSUNG)	+= battery_v2/
-obj-$(CONFIG_EXTCON)		+= extcon/
-obj-$(CONFIG_MEMORY)		+= memory/
-obj-$(CONFIG_IIO)		+= iio/
-obj-$(CONFIG_VME_BUS)		+= vme/
-obj-$(CONFIG_IPACK_BUS)		+= ipack/
-obj-$(CONFIG_NTB)		+= ntb/
-obj-$(CONFIG_FMC)		+= fmc/
-obj-$(CONFIG_POWERCAP)		+= powercap/
-obj-$(CONFIG_MCB)		+= mcb/
-obj-$(CONFIG_PERF_EVENTS)	+= perf/
-obj-$(CONFIG_RAS)		+= ras/
-obj-$(CONFIG_THUNDERBOLT)	+= thunderbolt/
-obj-$(CONFIG_CORESIGHT)		+= hwtracing/coresight/
-obj-y				+= hwtracing/intel_th/
-obj-$(CONFIG_STM)		+= hwtracing/stm/
-obj-$(CONFIG_ANDROID)		+= android/
-obj-$(CONFIG_NVMEM)		+= nvmem/
-obj-$(CONFIG_FPGA)		+= fpga/
-obj-$(CONFIG_FSI)		+= fsi/
-obj-$(CONFIG_TEE)		+= tee/
-obj-$(CONFIG_MULTIPLEXER)	+= mux/
+if [ -z "$RECOVERY" ]; then
+    # Build ramdisk
+    echo "Building RAMDisk..."
+    echo "-----------------------------------------------"
+    pushd build/ramdisk > /dev/null
+    find . ! -name . | LC_ALL=C sort | cpio -o -H newc -R root:root | gzip > ../out/$MODEL/ramdisk.cpio.gz || abort
+    popd > /dev/null
+    echo "-----------------------------------------------"
 
-obj-$(CONFIG_SEC_EXT)           += samsung/
+    # Create boot image
+    echo "Creating boot image..."
+    echo "-----------------------------------------------"
+    ./toolchain/mkbootimg --base $BASE --board $BOARD --cmdline "$CMDLINE" --hashtype $HASHTYPE \
+    --header_version $HEADER_VERSION --kernel $KERNEL_PATH --kernel_offset $KERNEL_OFFSET \
+    --os_patch_level $OS_PATCH_LEVEL --os_version $OS_VERSION --pagesize $PAGESIZE \
+    --ramdisk $RAMDISK --ramdisk_offset $RAMDISK_OFFSET --second_offset $SECOND_OFFSET \
+    --tags_offset $TAGS_OFFSET -o $OUTPUT_FILE || abort
 
-# CCIC
-obj-y	+= ccic/
+    # Build zip
+    echo "Building zip..."
+    echo "-----------------------------------------------"
+    cp build/out/$MODEL/boot.img build/out/$MODEL/zip/files/boot.img
+    cp build/out/$MODEL/dtb.img build/out/$MODEL/zip/files/dtb.img
+    cp build/out/$MODEL/dtbo.img build/out/$MODEL/zip/files/dtbo.img
+    cp build/update-binary build/out/$MODEL/zip/META-INF/com/google/android/update-binary
+    cp build/updater-script build/out/$MODEL/zip/META-INF/com/google/android/updater-script
 
-# COMBO REDRIVER
-obj-$(CONFIG_COMBO_REDRIVER_PTN36502)	+= redriver/
+    version=$(grep -o 'CONFIG_LOCALVERSION="[^"]*"' arch/arm64/configs/exynos9820_defconfig | cut -d '"' -f 2)
 
-obj-$(CONFIG_EXYNOS_BTS)	+= bts/
+    version=${version:1}
 
-# Mobicore driver
-obj-$(CONFIG_TRUSTONIC_TEE)     += gud/
+    if [ "$SOC" == "exynos9825" ]; then
+        version="${version}-N10"
+    else
+        version="${version}-S10"
+    fi
 
-# vision driver
-obj-$(CONFIG_VISION_SUPPORT)	+= vision/
+    pushd build/out/$MODEL/zip > /dev/null
+    DATE=`date +"%d-%m-%Y_%H-%M-%S"`
 
-obj-$(CONFIG_GNSS)		+= gnss/
+    NAME="$version"_"$MODEL"_UNOFFICIAL_"$DATE".zip
+    zip -r ../"$NAME" .
+    popd > /dev/null
+fi
 
-# Sensorhub driver
-obj-$(CONFIG_SENSORS_SSP)	+= sensorhub/
-
-# optics sensor driver
-obj-$(CONFIG_SENSORS_HRMSENSOR) += optics/
-obj-$(CONFIG_SENSORS_MAX86915)  += optics/
-obj-$(CONFIG_SENSORS_TCS3407)   += optics/
-obj-$(CONFIG_SENSORS_VD6281)    += optics/
-
-# grip sensor
-obj-y				+= sensors/
-
-# Fingerprint sensor
-obj-$(CONFIG_SENSORS_FINGERPRINT)	+= fingerprint/
-
-# Vibrator
-obj-y				+= vibrator/
-
-#TZIC
-obj-$(CONFIG_TZIC)	+= security/samsung/tzic/
-
-# FIVE TEE driver
-obj-$(CONFIG_FIVE_TEE_DRIVER)	+= security/samsung/five_tee_driver/
-obj-$(CONFIG_ICD)		+= security/samsung/icdrv/
-
-# SPU signature verify
-obj-$(CONFIG_SPU_VERIFY)        += spu_verify/
-
-# uH
-obj-$(CONFIG_UH)		+= uh/
-
-
-# Unconditionally include ExtremeROM code.
-# The Makefile in it will decide what fixups we need.
-obj-y				+= extremerom/
+popd > /dev/null
+echo "Build finished successfully!"
